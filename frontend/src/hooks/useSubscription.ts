@@ -7,6 +7,8 @@ type Subscription = {
   interval: number;
   last_charged: number;
   active: boolean;
+  paused: boolean;
+  trial_duration: number;
 };
 
 export function useSubscription(userKey: string, refreshTrigger?: number) {

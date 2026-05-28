@@ -14,10 +14,18 @@ const INTERVALS = [
   { label: "Monthly (~30d)", value: 2_592_000 },
 ];
 
+const TRIAL_DURATIONS = [
+  { label: "No free trial", value: 0 },
+  { label: "7 days", value: 7 },
+  { label: "14 days", value: 14 },
+  { label: "30 days", value: 30 },
+];
+
 export default function SubscribeForm({ userKey, onSign, onSuccess }: Props) {
   const [merchant, setMerchant] = useState("");
   const [amount, setAmount] = useState("");
   const [interval, setInterval] = useState(INTERVALS[2].value);
+  const [trialDays, setTrialDays] = useState(TRIAL_DURATIONS[0].value);
   const [status, setStatus] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -28,7 +36,7 @@ export default function SubscribeForm({ userKey, onSign, onSuccess }: Props) {
     try {
       // Convert XLM → stroops (1 XLM = 10_000_000)
       const stroops = BigInt(Math.round(parseFloat(amount) * 10_000_000));
-      const xdr = await buildSubscribeTx(userKey, merchant, stroops, BigInt(interval));
+      const xdr = await buildSubscribeTx(userKey, merchant, stroops, BigInt(interval), undefined, trialDays);
       const hash = await onSign(xdr);
       setStatus(`Subscribed! tx: ${hash.slice(0, 12)}…`);
       onSuccess();
@@ -73,6 +81,17 @@ export default function SubscribeForm({ userKey, onSign, onSuccess }: Props) {
           {INTERVALS.map((i) => (
             <option key={i.value} value={i.value}>
               {i.label}
+            </option>
+          ))}
+        </select>
+      </label>
+
+      <label className="form-group">
+        <span className="form-label">Free trial period</span>
+        <select value={trialDays} onChange={(e) => setTrialDays(Number(e.target.value))}>
+          {TRIAL_DURATIONS.map((t) => (
+            <option key={t.value} value={t.value}>
+              {t.label}
             </option>
           ))}
         </select>

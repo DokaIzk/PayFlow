@@ -24,6 +24,9 @@ export const NETWORK_PASSPHRASE =
 // Replace with your deployed contract ID after `soroban contract deploy`
 export const CONTRACT_ID = import.meta.env.VITE_CONTRACT_ID ?? "";
 
+// Default token address (XLM) - replace with your actual token
+export const DEFAULT_TOKEN = import.meta.env.VITE_DEFAULT_TOKEN ?? "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4";
+
 export const server = new Server(RPC_URL);
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -67,18 +70,25 @@ async function buildTx(
  * @param merchant    merchant public key
  * @param amount      amount in stroops (1 XLM = 10_000_000 stroops)
  * @param intervalSec seconds between charges (e.g. 2_592_000 = 30 days)
+ * @param tokenAddr   token contract address (defaults to native XLM)
+ * @param trialDays   free trial duration in days (0 = no trial)
  */
 export async function buildSubscribeTx(
   user: string,
   merchant: string,
   amount: bigint,
-  intervalSec: bigint
+  intervalSec: bigint,
+  tokenAddr: string = DEFAULT_TOKEN,
+  trialDays: number = 0
 ): Promise<string> {
+  const trialDurationSec = BigInt(trialDays * 24 * 60 * 60);
   return buildTx(user, "subscribe", [
     addressVal(user),
     addressVal(merchant),
     nativeToScVal(amount, { type: "i128" }),
     nativeToScVal(intervalSec, { type: "u64" }),
+    addressVal(tokenAddr),
+    nativeToScVal(trialDurationSec, { type: "u64" }),
   ]);
 }
 
@@ -130,9 +140,11 @@ export async function getSubscription(user: string) {
         break;
       case "interval":
       case "last_charged":
+      case "trial_duration":
         fields[key] = Number(val.u64());
         break;
       case "active":
+      case "paused":
         fields[key] = val.b();
         break;
     }
@@ -143,5 +155,7 @@ export async function getSubscription(user: string) {
     interval: number;
     last_charged: number;
     active: boolean;
+    paused: boolean;
+    trial_duration: number;
   };
 }

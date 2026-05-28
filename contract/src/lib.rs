@@ -33,6 +33,7 @@ pub struct Subscription {
     pub active: bool,
     pub paused: bool,       // true if paused, false otherwise
     pub token: Address,     // SAC token used for this subscription
+    pub trial_duration: u64, // free trial duration in seconds (0 = no trial)
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -57,6 +58,9 @@ impl FlowPay {
     /// `token` is the SAC address of the token to use for this subscription
     /// (e.g. native XLM or USDC). Each subscription can use a different token.
     ///
+    /// `trial_duration` is the free trial period in seconds (0 = no trial).
+    /// During the trial, no charges will be applied.
+    ///
     /// The user must have already called `approve()` on the token contract
     /// granting this contract an allowance >= amount.
     pub fn subscribe(
@@ -66,6 +70,7 @@ impl FlowPay {
         amount: i128,
         interval: u64,
         token: Address,
+        trial_duration: u64,
     ) {
         user.require_auth();
 
@@ -87,6 +92,7 @@ impl FlowPay {
             active: true,
             paused: false,
             token,
+            trial_duration,
         };
 
         storage::set_subscription(&env, &user, &sub);
@@ -97,6 +103,7 @@ impl FlowPay {
     ///
     /// Anyone can call this (your backend / keeper service will call it).
     /// The contract verifies the interval has elapsed before transferring.
+    /// If the subscription is still in its free trial period, no charge is made.
     /// Uses the token stored on the subscription itself.
     pub fn charge(env: Env, user: Address) {
         let key = DataKey::Subscription(user.clone());
@@ -111,6 +118,15 @@ impl FlowPay {
         assert!(!sub.paused, "subscription is paused");
 
         let now = env.ledger().timestamp();
+        
+        // Check if still in trial period - if so, just update last_charged and return
+        if now < sub.last_charged + sub.trial_duration {
+            // Still in trial, don't charge but update last_charged
+            sub.last_charged = now;
+            storage::set_subscription(&env, &user, &sub);
+            return;
+        }
+
         if now < sub.last_charged + sub.interval {
             env.panic_with_error(ContractError::IntervalNotElapsed);
         }
