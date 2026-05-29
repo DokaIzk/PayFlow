@@ -50,6 +50,129 @@ There is no centralised backend. The only off-chain component required is a **ke
 
 ---
 
+## Contract Module Structure
+
+```mermaid
+graph TD
+    lib["lib.rs (Entry Point)"]
+    admin["admin.rs"]
+    batch["batch.rs"]
+    events["events.rs"]
+    fee["fee.rs"]
+    grace["grace.rs"]
+    merchant_stats["merchant_stats.rs"]
+    migration["migration.rs"]
+    referral["referral.rs"]
+    spending_limit["spending_limit.rs"]
+    storage["storage.rs"]
+    subscription_count["subscription_count.rs"]
+    subscription_history["subscription_history.rs"]
+    subscription_metadata["subscription_metadata.rs"]
+    trial["trial.rs"]
+    validation["validation.rs"]
+    whitelist["whitelist.rs"]
+
+    lib --> admin
+    lib --> batch
+    lib --> events
+    lib --> fee
+    lib --> grace
+    lib --> merchant_stats
+    lib --> migration
+    lib --> referral
+    lib --> spending_limit
+    lib --> storage
+    lib --> subscription_count
+    lib --> subscription_history
+    lib --> subscription_metadata
+    lib --> trial
+    lib --> validation
+    lib --> whitelist
+
+    batch --> events
+    batch --> grace
+    batch --> merchant_stats
+```
+
+## Data Flow for Key Functions
+
+### subscribe()
+```mermaid
+sequenceDiagram
+    participant User
+    participant lib as lib.rs
+    participant whitelist as whitelist.rs
+    participant token as Token Contract
+    participant storage as Storage
+    participant subscription_count as subscription_count.rs
+    participant referral as referral.rs
+    participant events as events.rs
+
+    User->>lib: subscribe()
+    lib->>whitelist: is_whitelist_enabled()
+    alt whitelist enabled
+        lib->>whitelist: is_whitelisted(merchant)
+        whitelist-->>lib: true/false
+    end
+    lib->>token: allowance()
+    lib->>storage: set Subscription
+    lib->>subscription_count: increment()
+    lib->>referral: store_referral()
+    lib->>events: publish_subscribed()
+```
+
+### charge()
+```mermaid
+sequenceDiagram
+    participant Keeper/User
+    participant lib as lib.rs
+    participant grace as grace.rs
+    participant token as Token Contract
+    participant merchant_stats as merchant_stats.rs
+    participant storage as Storage
+    participant subscription_history as subscription_history.rs
+    participant events as events.rs
+
+    Keeper/User->>lib: charge()
+    lib->>storage: get Subscription
+    lib->>grace: get_grace_period()
+    lib->>token: transfer_from()
+    lib->>merchant_stats: increment_revenue_with_daily()
+    lib->>storage: update Subscription.last_charged
+    lib->>subscription_history: record_charge()
+    lib->>events: publish_charged()
+```
+
+### batch_charge()
+```mermaid
+sequenceDiagram
+    participant Keeper
+    participant lib as lib.rs
+    participant batch as batch.rs
+    participant grace as grace.rs
+    participant token as Token Contract
+    participant merchant_stats as merchant_stats.rs
+    participant storage as Storage
+    participant events as events.rs
+
+    Keeper->>lib: batch_charge(users)
+    lib->>batch: batch_charge()
+    loop for each user in users
+        batch->>storage: get Subscription
+        batch->>grace: get_grace_period()
+        alt user eligible
+            batch->>token: transfer_from()
+            batch->>merchant_stats: increment_revenue_with_daily()
+            batch->>storage: update Subscription
+            batch->>events: publish_charged()
+        end
+    end
+    batch-->>lib: Vec<ChargeResult>
+    lib-->>Keeper: Vec<ChargeResult>
+```
+
+---
+
 ## Smart Contract Design
 
 ### Entry Points
