@@ -137,6 +137,11 @@ describe("getMerchantSubscribers", () => {
 
     const { getMerchantSubscribers } = await import("../stellar");
     const result = await getMerchantSubscribers("merchant_A");
+
+    expect(result).toEqual([]);
+  });
+});
+
 describe("getChargeHistory", () => {
   beforeEach(() => {
     vi.clearAllMocks();
