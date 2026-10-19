@@ -574,6 +574,11 @@ pub fn publish_subscriber_index_ttl_extended(env: &Env, count: u64) {
         .publish((Symbol::new(env, "subscriber_index_ttl_extended"),), count);
 }
 
+pub fn publish_merchant_state_ttl_extended(env: &Env, count: u64) {
+    env.events()
+        .publish((Symbol::new(env, "merchant_state_ttl_extended"),), count);
+}
+
 /// Audit event for a successful admin repair of a stale subscriber index slot.
 pub fn publish_subscriber_index_cleared(env: &Env, user: &Address, index: u64) {
     env.events().publish(

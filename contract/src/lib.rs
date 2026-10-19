@@ -151,6 +151,19 @@ pub enum DataKey {
 
 pub const SUBSCRIPTION_TTL_LEDGERS: u32 = 6307200; // ~1 year (assuming 5s blocks)
 
+/// TTL for merchant state keys (revenue, per-day buckets, revenue history,
+/// subscriber counts, whitelist entries, freeze markers, merchant index):
+/// ~90 days at 5 s/ledgers.
+///
+/// Deliberately shorter than [`SUBSCRIPTION_TTL_LEDGERS`] (~1 year): the
+/// subscription that produced the revenue outlives the merchant's analytics
+/// keys. The 90-day vs 1-year mismatch is intended — merchant state is a
+/// derived, recomputable cache tied to the merchant's lifetime, while the
+/// subscription is the source of truth and must persist for the full billing
+/// cycle. If this value is ever retuned, every writer below must change with
+/// it; it is not a separate runtime knob. See docs/architecture/storage_and_ttl.md.
+pub const MERCHANT_STATE_TTL_LEDGERS: u32 = 1_555_200; // ~90 days (assuming 5s blocks)
+
 pub use caps::{
     MAX_BATCH_PAUSE_SUBSCRIPTIONS, MAX_BATCH_SIZE_CEILING, MAX_MERCHANT_SUB_COUNT_BATCH,
     MAX_WHITELIST_BATCH_SIZE, REVENUE_DAY_PAGE_SIZE, SUBSCRIBER_PAGE_SIZE, TOP_MERCHANTS_PAGE_SIZE,
@@ -1739,6 +1752,97 @@ impl FlowPay {
         events::publish_subscriber_index_ttl_extended(&env, count);
     }
 
+    /// Extends the TTL of whitelist, freeze, and merchant-index/revenue state
+    /// so a long-idle deployment does not silently lose those keys to archival.
+    ///
+    /// Bumps the whitelist index, the merchant index, and the per-merchant
+    /// state discovered through them (whitelist flag, freeze marker/reason,
+    /// revenue total, subscriber count, known marker, and revenue day buckets
+    /// plus history) to [`MERCHANT_STATE_TTL_LEDGERS`] (~90 days at 5s
+    /// ledgers). This is the whitelist/freeze/merchant-index counterpart of
+    /// `extend_subscriber_index_ttl`; it does not change the TTL value itself.
+    ///
+    /// # Auth
+    ///
+    /// Requires authorization from the contract admin.
+    ///
+    /// # Side Effects
+    ///
+    /// Extends TTL for each key group and emits a `merchant_state_ttl_extended`
+    /// event with the number of merchants whose state was extended, consistent
+    /// with `subscriber_index_ttl_extended`.
+    pub fn extend_merchant_state_ttl(env: Env) {
+        admin::require_admin(&env);
+
+        let mut merchants_extended: u64 = 0;
+
+        // Whitelist group: index container, slots, flags, reverse slots.
+        bump_merchant_state_ttl(&env, &DataKey::WhitelistIndexSize);
+        let wl_size = whitelist::get_whitelist_size(&env);
+        let mut i: u32 = 0;
+        while i < wl_size {
+            let key = DataKey::WhitelistIndex(i);
+            if let Some(merchant) =
+                env.storage().persistent().get::<_, Address>(&key)
+            {
+                bump_merchant_state_ttl(&env, &key);
+                bump_merchant_state_ttl(
+                    &env,
+                    &DataKey::MerchantWhitelist(merchant.clone()),
+                );
+                let slot = DataKey::WhitelistIndexSlot(merchant.clone());
+                if env.storage().persistent().has(&slot) {
+                    bump_merchant_state_ttl(&env, &slot);
+                }
+                merchants_extended += 1;
+            }
+            i += 1;
+        }
+
+        // Merchant index + freeze/revenue group.
+        bump_merchant_state_ttl(&env, &DataKey::MerchantIndexSize);
+        let mi_size = merchant_stats::get_merchant_index_size(&env);
+        let mut j: u32 = 0;
+        while j < mi_size {
+            let key = DataKey::MerchantIndex(j);
+            if let Some(merchant) =
+                env.storage().persistent().get::<_, Address>(&key)
+            {
+                bump_merchant_state_ttl(&env, &key);
+                bump_merchant_state_ttl(&env, &DataKey::MerchantKnown(merchant.clone()));
+                bump_merchant_state_ttl(&env, &DataKey::MerchantRevenue(merchant.clone()));
+                bump_merchant_state_ttl(&env, &DataKey::MerchantSubCount(merchant.clone()));
+                if env.storage().persistent().has(&DataKey::MerchantFrozen(merchant.clone())) {
+                    bump_merchant_state_ttl(&env, &DataKey::MerchantFrozen(merchant.clone()));
+                    bump_merchant_state_ttl(
+                        &env,
+                        &DataKey::MerchantFreezeReason(merchant.clone()),
+                    );
+                }
+                let day_index_key = DataKey::MerchantRevenueDayIndex(merchant.clone());
+                if let Some(days) =
+                    env.storage().persistent().get::<_, Vec<u64>>(&day_index_key)
+                {
+                    bump_merchant_state_ttl(&env, &day_index_key);
+                    for day in days.iter() {
+                        bump_merchant_state_ttl(
+                            &env,
+                            &DataKey::MerchantRevenueDay(merchant.clone(), day),
+                        );
+                    }
+                }
+                bump_merchant_state_ttl(
+                    &env,
+                    &DataKey::MerchantRevenueHistory(merchant.clone()),
+                );
+                merchants_extended += 1;
+            }
+            j += 1;
+        }
+
+        events::publish_merchant_state_ttl_extended(&env, merchants_extended);
+    }
+
     /// Admin-only repair: tombstones a single stale subscriber index slot.
     ///
     /// Looks up the occupant of `index`, refuses if that subscriber currently
@@ -2427,6 +2531,16 @@ fn extend_subscription_ttl(env: &Env, user: &Address) {
     env.storage()
         .instance()
         .extend_ttl(SUBSCRIPTION_TTL_LEDGERS, SUBSCRIPTION_TTL_LEDGERS);
+}
+
+/// Extends a single persistent key to the merchant-state TTL window, if it
+/// exists. No-op for absent keys so the sweep is safe over sparse indexes.
+fn bump_merchant_state_ttl(env: &Env, key: &DataKey) {
+    if env.storage().persistent().has(key) {
+        env.storage()
+            .persistent()
+            .extend_ttl(key, MERCHANT_STATE_TTL_LEDGERS, MERCHANT_STATE_TTL_LEDGERS);
+    }
 }
 
 /// Shared implementation for `pay_per_use` and `pay_per_use_to`. `recipient`

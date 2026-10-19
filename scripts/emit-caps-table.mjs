@@ -26,6 +26,7 @@ const DOCUMENTED = [
   "MERCHANT_PAGE_SIZE",
   "REVENUE_DAY_PAGE_SIZE",
   "TOP_MERCHANTS_PAGE_SIZE",
+  "WHITELIST_PAGE_SIZE",
 ];
 
 const src = readFileSync(CAPS, "utf8");

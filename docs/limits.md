@@ -47,6 +47,7 @@ capped entrypoint below reads one of them, so this is the complete set.
 | `MERCHANT_PAGE_SIZE`              | 50    | `get_merchant_page`                           | No                     |
 | `REVENUE_DAY_PAGE_SIZE`           | 30    | `get_merchant_revenue_day_page`              | No                     |
 | `TOP_MERCHANTS_PAGE_SIZE`         | 20    | `get_top_merchants_by_subs`                  | No                     |
+| `WHITELIST_PAGE_SIZE`             | 50    | `get_whitelist_page`                         | No                     |
 
 Two consequences worth internalising:
 
@@ -123,7 +124,7 @@ of them has a default, so a caller must always pass one.
 | `get_top_merchants_by_subs`     | `limit`   | 20    | Panics `BatchTooLarge`  | Up to 20 rows      |
 | `get_merchant_revenue_day_page` | `limit`   | 30    | Panics `BatchTooLarge`  | Up to 30 `(day, amount)` pairs |
 | `get_merchant_revenue_history`  | `days`    | none  | -                      | Whole history      |
-| `get_whitelist_page`            | `limit`   | none  | -                      | Any number of rows |
+| `get_whitelist_page`            | `limit`   | 50    | Silently clamps to 50   | Up to 50 merchants |
 
 Notes:
 
@@ -134,8 +135,9 @@ Notes:
   `limit`. The cap bounds the output, not the work.
 - `get_merchant_revenue_day_page` walks `offset` forward from the start of the
   merchant's day history, so deep pages are progressively more expensive.
-- `get_whitelist_page` is unbounded, which is fine for a list that is normally
-  tens of entries but is worth knowing before you paginate a large whitelist.
+- `get_whitelist_page` clamps `limit` to 50 (`WHITELIST_PAGE_SIZE`) like the
+  other `*_page` readers, and its offset arithmetic is saturating so no
+  `(offset, limit)` pair can trap.
 - `get_merchant_page` scans at most 50 merchant-index slots per call. Its
   offset is a slot index, and missing slots are skipped.
 
@@ -153,11 +155,10 @@ uncapped?" should find the answer here rather than by reading the code:
 | Entrypoint                    | Uncapped because                          | Practical risk                                        |
 | ----------------------------- | ----------------------------------------- | ----------------------------------------------------- |
 | `get_merchant_revenue_history`| `days` is never validated                  | Reads the whole stored history; bounded by retention, not by the argument |
-| `get_whitelist_page`          | Only `(offset + limit).min(size)` applies  | Large whitelists can be returned in one call           |
 
-Neither is an unbounded *write*, and neither lets a caller exceed the network's
-per-transaction limits, so neither is an availability hazard in the way a
-missing batch cap would be. They are listed so the gap is documented rather
+It is not an unbounded *write*, and it does not let a caller exceed the
+network's per-transaction limits, so it is not an availability hazard in the
+way a missing batch cap would be. It is listed so the gap is documented rather
 than discovered.
 
 ## Enforcement: panic vs silent clamp
@@ -168,8 +169,8 @@ silently, meaning a request for 500 addresses *succeeds* and returns 50:
 | Behaviour        | Entrypoints                                                      |
 | ---------------- | ---------------------------------------------------------------- |
 | **Panic** `BatchTooLarge` (20) | `batch_charge`, `batch_extend_subscription_ttl`, `batch_cancel`, `batch_pause_subscriptions`, `get_batch_charge_estimate`, `whitelist_batch_add`, `whitelist_batch_remove`, `get_merchant_statuses`, `get_merchant_sub_counts`, `get_next_charge_batch`, `get_top_merchants_by_subs`, `get_merchant_revenue_day_page` |
-| **Silently clamps** | `get_subscriber_page`, `get_active_subscriber_page`, `get_charge_history_page` |
-| **No limit**     | `get_whitelist_page`, `get_merchant_revenue_history`               |
+| **Silently clamps** | `get_subscriber_page`, `get_active_subscriber_page`, `get_charge_history_page`, `get_whitelist_page` |
+| **No limit**     | `get_merchant_revenue_history`                                     |
 
 Practical rule: a clamping call never errors, so a client that walks a large
 result set by incrementing `offset` can loop forever if it assumes it got
