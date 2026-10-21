@@ -30,6 +30,7 @@ mod referral;
 mod scenario;
 mod spending_limit;
 mod storage;
+mod subscriber_scan;
 mod subscription_count;
 mod subscription_history;
 mod subscription_metadata;
@@ -1626,23 +1627,10 @@ impl FlowPay {
     /// Pruned (cancelled) slots are skipped. Returns an empty Vec when
     /// `offset >= count` or `limit == 0`.
     pub fn get_subscriber_page(env: Env, offset: u64, limit: u32) -> Vec<Address> {
-        let count = subscription_count::get_subscriber_index_size(&env);
         let cap: u32 = caps::effective_page_size(Some(limit), SUBSCRIBER_PAGE_SIZE);
-        let mut result = Vec::new(&env);
-        if offset >= count || cap == 0 {
-            return result;
-        }
-        let mut i = offset;
-        let end = offset + cap as u64;
-        while i < end && i < count {
-            if !subscription_count::is_subscriber_index_removed(&env, i) {
-                if let Some(addr) = env.storage().persistent().get(&DataKey::SubscriberIndex(i)) {
-                    result.push_back(addr);
-                }
-            }
-            i += 1;
-        }
-        result
+        // Delegate bounds, index reads, and tombstone skipping to the shared helper.
+        // No per-address filter: this reader returns all non-tombstoned addresses.
+        subscriber_scan::scan_subscriber_slots(&env, offset, cap as u64)
     }
 
     /// Returns a list of subscriber addresses that are currently due for charging.
@@ -1658,37 +1646,32 @@ impl FlowPay {
         if limit > SUBSCRIBER_PAGE_SIZE {
             env.panic_with_error(ContractError::BatchTooLarge);
         }
-        let size = subscription_count::get_subscriber_index_size(&env);
-        let mut result = Vec::new(&env);
-        if offset >= size || limit == 0 {
-            return result;
+        if limit == 0 {
+            return Vec::new(&env);
         }
         let exclude = exclude_lapsed.unwrap_or(true);
-        let mut i = offset;
-        let end = (offset + limit as u64).min(size);
-        while i < end {
-            if !subscription_count::is_subscriber_index_removed(&env, i) {
-                if let Some(addr) = env.storage().persistent().get::<DataKey, Address>(&DataKey::SubscriberIndex(i)) {
-                    if let Some(sub) = storage::get_subscription(&env, &addr) {
-                        // sub.active required here: paused subscriptions must not be charged/acted upon —
-                        // this builds a batch of addresses ready for charge(); cancelled and paused
-                        // subscriptions must be excluded so keepers never attempt to charge them.
-                        if sub.active {
-                            if let Some(next) = charge_exec::compute_next_charge_at(&sub) {
-                                let now = env.ledger().timestamp();
-                                if now >= next {
-                                    let grace = grace::get_grace_period(&env);
-                                    let lapsed = grace > 0 && now > next.saturating_add(grace);
-                                    if !exclude || !lapsed {
-                                        result.push_back(addr);
-                                    }
-                                }
+        // Delegate bounds, index reads, and tombstone skipping to the shared helper,
+        // then apply the charge-due filter at this call site.
+        let candidates = subscriber_scan::scan_subscriber_slots(&env, offset, limit as u64);
+        let mut result = Vec::new(&env);
+        for addr in candidates.iter() {
+            if let Some(sub) = storage::get_subscription(&env, &addr) {
+                // sub.active required here: paused subscriptions must not be charged/acted upon —
+                // this builds a batch of addresses ready for charge(); cancelled and paused
+                // subscriptions must be excluded so keepers never attempt to charge them.
+                if sub.active {
+                    if let Some(next) = charge_exec::compute_next_charge_at(&sub) {
+                        let now = env.ledger().timestamp();
+                        if now >= next {
+                            let grace = grace::get_grace_period(&env);
+                            let lapsed = grace > 0 && now > next.saturating_add(grace);
+                            if !exclude || !lapsed {
+                                result.push_back(addr);
                             }
                         }
                     }
                 }
             }
-            i += 1;
         }
         result
     }
@@ -2370,41 +2353,23 @@ impl FlowPay {
     /// the index. The scan is bounded: at most `cap` slots are examined per
     /// call, preventing unbounded iteration even on sparse indexes.
     pub fn get_active_subscriber_page(env: Env, offset: u64, limit: u32) -> Vec<Address> {
-        let count = subscription_count::get_subscriber_index_size(&env);
         let cap: u32 = caps::effective_page_size(Some(limit), SUBSCRIBER_PAGE_SIZE);
+        // Delegate bounds, index reads, and tombstone skipping to the shared helper,
+        // then apply the active-only filter at this call site.
+        let candidates = subscriber_scan::scan_subscriber_slots(&env, offset, cap as u64);
         let mut result = Vec::new(&env);
-        if offset >= count || cap == 0 {
-            return result;
-        }
-        let end = (offset + cap as u64).min(count);
-        let mut i = offset;
-        while i < end {
-            if subscription_count::is_subscriber_index_removed(&env, i) {
-                i += 1;
-                continue;
-            }
-            if let Some(addr) = env
-                .storage()
-                .persistent()
-                .get::<DataKey, Address>(&DataKey::SubscriberIndex(i))
-            {
-                if let Some(sub) = env
-                    .storage()
-                    .persistent()
-                    .get::<DataKey, Subscription>(&DataKey::Subscription(addr.clone()))
-                {
-                    // sub.active used intentionally: legacy `paused && !active` rows
-                    // must remain excluded from this page per the design in storage.rs
-                    // (`get_active_subscriber_page` lists current active subscriptions,
-                    // not all non-cancelled rows). See `storage::is_cancelled` for the
-                    // full semantics and `scenario_legacy_paused_inactive_row_reader_semantics`
-                    // for the regression that locks this invariant.
-                    if sub.active {
-                        result.push_back(addr);
-                    }
+        for addr in candidates.iter() {
+            if let Some(sub) = storage::get_subscription(&env, &addr) {
+                // sub.active used intentionally: legacy `paused && !active` rows
+                // must remain excluded from this page per the design in storage.rs
+                // (`get_active_subscriber_page` lists current active subscriptions,
+                // not all non-cancelled rows). See `storage::is_cancelled` for the
+                // full semantics and `scenario_legacy_paused_inactive_row_reader_semantics`
+                // for the regression that locks this invariant.
+                if sub.active {
+                    result.push_back(addr);
                 }
             }
-            i += 1;
         }
         result
     }
