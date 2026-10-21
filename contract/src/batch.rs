@@ -61,6 +61,7 @@ pub enum CancelResult {
     /// A paused (but active) subscription was cancelled.
     PausedCancelled,
     /// Subscription belongs to a frozen merchant and was cancelled.
+    /// Subscription's merchant was frozen; cancel succeeded but state was unusual.
     MerchantFrozen,
 }
 
@@ -449,6 +450,7 @@ pub fn batch_cancel(env: &Env, users: Vec<Address>) -> Vec<CancelResult> {
                     // for the purpose of this batch guard.
                     CancelResult::AlreadyCancelled
                 } else {
+                    let was_paused = sub.paused;
                     let merchant_frozen = crate::whitelist::is_frozen(env, &sub.merchant);
 
                     // Cancel regardless of state, exactly once.

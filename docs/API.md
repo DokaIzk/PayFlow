@@ -1525,6 +1525,8 @@ Auth: none.
 
 Returns: `Vec<Address>`.
 
+**Shared scan implementation:** `get_subscriber_page`, `get_active_subscriber_page`, and `get_next_charge_batch` all delegate their index-bounds lookup, `SubscriberIndex` slot reads, and tombstone skipping to a common internal helper (`scan_subscriber_slots` in `subscriber_scan.rs`). Each caller then applies its own per-address filter on the returned list. This means all three functions share identical tombstone-skip and out-of-bounds behavior.
+
 CLI example:
 
 ```bash
